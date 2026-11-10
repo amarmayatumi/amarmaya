@@ -106,10 +106,17 @@ export default function AdminPanel() {
 
   /* ─── init ─────────────────────────────────────────── */
   useEffect(() => {
-    setMounted(true);
-    fetchGlobalSettings();
-    const t = localStorage.getItem("my_ot_admin_token");
-    if (t) { setToken(t); setIsLoggedIn(true); fetchUsers(t); }
+    const frame = requestAnimationFrame(() => {
+      setMounted(true);
+      fetchGlobalSettings();
+      const t = localStorage.getItem("my_ot_admin_token");
+      if (t) {
+        setToken(t);
+        setIsLoggedIn(true);
+        fetchUsers(t);
+      }
+    });
+    return () => cancelAnimationFrame(frame);
   }, [fetchUsers, fetchGlobalSettings]);
 
   /* calcStats and fetchUsers defined above useEffect */
@@ -183,15 +190,14 @@ export default function AdminPanel() {
   const saveEntry = () => {
     if (!editingEntryObj) return;
     const orig = [...(userDetail.entries || [])];
+    const { isNew, originalDate, ...entryToSave } = editingEntryObj;
     let updated;
-    if (editingEntryObj.isNew) {
-      delete editingEntryObj.isNew;
-      if (!editingEntryObj.date || !editingEntryObj.amount) return alert("তারিখ ও পরিমাণ দেওয়া বাধ্যতামূলক।");
-      updated = [...orig, editingEntryObj];
+    if (isNew) {
+      if (!entryToSave.date || !entryToSave.amount) return alert("তারিখ ও পরিমাণ দেওয়া বাধ্যতামূলক।");
+      updated = [...orig, entryToSave];
     } else {
-      updated = orig.map(e => (e.date === editingEntryObj.originalDate && e.id === editingEntryObj.id) ? editingEntryObj : e);
+      updated = orig.map(e => (e.date === originalDate && e.id === entryToSave.id) ? entryToSave : e);
     }
-    delete editingEntryObj.originalDate;
     savePayload({ settings: userDetail.settings, entries: updated }, "রেকর্ড সেভ হয়েছে! ✅");
     setIsEditingEntry(false);
   };
@@ -975,7 +981,7 @@ export default function AdminPanel() {
             {!teamLoaded && !teamLoading && (
               <div className="empty-state">
                 <i className="ri-group-line"></i>
-                মাস নির্বাচন করে "লোড করুন" বাটনে চাপুন।
+                মাস নির্বাচন করে &quot;লোড করুন&quot; বাটনে চাপুন।
               </div>
             )}
           </div>
