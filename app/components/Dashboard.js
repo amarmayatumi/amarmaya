@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useAppContext } from "../AppContext";
+import { getLocalDateKey } from "@/utils/localDate";
 
 export default function Dashboard({ setActiveTab, setShareModal }) {
   const { settings, entries, uid, addEntry, showDialog } = useAppContext();
@@ -163,6 +164,7 @@ export default function Dashboard({ setActiveTab, setShareModal }) {
   let tiffinAmount = 0;
   let nightAmount = 0;
   let otEarnings = 0;
+  let otherEarnings = 0;
 
   // Public Holidays 2026 for multiplier calculations
   const holidays2026 = {
@@ -175,7 +177,14 @@ export default function Dashboard({ setActiveTab, setShareModal }) {
   };
 
   entries.forEach((e) => {
-    if (!e.date || e.type !== "work") return;
+    if (!e.date) return;
+    if (e.type && e.type !== "work") {
+      const [entryYear, entryMonth] = e.date.split("-").map(Number);
+      if (entryMonth - 1 === currentMonth && entryYear === currentYear) {
+        otherEarnings += parseFloat(e.amount) || 0;
+      }
+      return;
+    }
     const [y, m, d] = e.date.split("-").map(Number);
     const dateObj = new Date(y, m - 1, d);
 
@@ -184,7 +193,7 @@ export default function Dashboard({ setActiveTab, setShareModal }) {
       totalHrs += ot;
       
       const holKey = `${dateObj.getMonth()}-${dateObj.getDate()}`;
-      const isFridayOrHoliday = !!holidays2026[holKey];
+      const isFridayOrHoliday = dateObj.getFullYear() === 2026 && !!holidays2026[holKey];
       const hourlyRate = parseFloat(settings.hourlyRate) || 0;
       const holidayMultiplier = parseFloat(settings.holidayMultiplier) || 2.0;
       
@@ -205,8 +214,8 @@ export default function Dashboard({ setActiveTab, setShareModal }) {
   });
 
   const fixedMonthly = (parseFloat(settings.gross) || 0) + (parseFloat(settings.bonus) || 0);
-  const grandTotal = fixedMonthly + otEarnings + tiffinAmount + nightAmount;
-  const currentDateStr = new Date().toISOString().split("T")[0];
+  const grandTotal = fixedMonthly + otEarnings + tiffinAmount + nightAmount + otherEarnings;
+  const currentDateStr = getLocalDateKey();
   const hasEntryToday = entries.some((e) => e.date === currentDateStr);
 
   const handleQuickAdd = async (hours) => {
@@ -216,7 +225,7 @@ export default function Dashboard({ setActiveTab, setShareModal }) {
     }
     const todayObj = new Date();
     const holKey = `${todayObj.getMonth()}-${todayObj.getDate()}`;
-    const isFridayOrHoliday = !!holidays2026[holKey];
+    const isFridayOrHoliday = todayObj.getFullYear() === 2026 && !!holidays2026[holKey];
 
     const newEntry = {
       id: Date.now().toString(),
@@ -328,7 +337,7 @@ export default function Dashboard({ setActiveTab, setShareModal }) {
       weekDays.push({
         name: dayNames[i],
         engName: engDayNames[i],
-        dateStr: d.toISOString().split("T")[0],
+        dateStr: getLocalDateKey(d),
         displayDate: d.getDate(),
       });
     }

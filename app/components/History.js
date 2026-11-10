@@ -3,10 +3,11 @@
 import { useState, useMemo, useEffect } from "react";
 import { useAppContext } from "../AppContext";
 import * as htmlToImage from "html-to-image";
+import { getLocalMonthKey } from "@/utils/localDate";
 
 export default function History({ initialMonth }) {
   const { entries, deleteEntry, settings, showDialog } = useAppContext();
-  const currentMonthStr = new Date().toISOString().slice(0, 7);
+  const currentMonthStr = getLocalMonthKey();
   const [selectedMonth, setSelectedMonth] = useState(initialMonth || currentMonthStr);
 
   useEffect(() => {
@@ -33,7 +34,7 @@ export default function History({ initialMonth }) {
     if (e.type === "work" || !e.type) {
       const d = parseLocalDate(e.date);
       const holKey = `${d.getMonth()}-${d.getDate()}`;
-      const isFridayOrHoliday = !!holidays2026[holKey];
+      const isFridayOrHoliday = d.getFullYear() === 2026 && !!holidays2026[holKey];
       const hourlyRate = parseFloat(settings.hourlyRate) || 0;
       const holidayMultiplier = parseFloat(settings.holidayMultiplier) || 2.0;
       const currentRate = isFridayOrHoliday ? (hourlyRate * holidayMultiplier) : hourlyRate;
@@ -50,7 +51,7 @@ export default function History({ initialMonth }) {
   // Build available months from entries
   const monthOptions = useMemo(() => {
     const set = new Set();
-    const now = new Date().toISOString().slice(0, 7);
+    const now = getLocalMonthKey();
     set.add(now); // Always include current month
     entries.forEach((e) => {
       if (!e.date) return;
@@ -70,12 +71,14 @@ export default function History({ initialMonth }) {
 
   // Monthly summary
   const monthlySummary = useMemo(() => {
-    let totalHrs = 0, tiffinAmt = 0, nightAmt = 0, otEarnings = 0;
+    let totalHrs = 0, tiffinAmt = 0, nightAmt = 0, otEarnings = 0, otherEarnings = 0;
     filteredEntries.forEach((e) => {
-      if (e.type === "work" || !e.type) {
+      if (e.type && e.type !== "work") {
+        otherEarnings += parseFloat(e.amount) || 0;
+      } else {
         const d = parseLocalDate(e.date);
         const holKey = `${d.getMonth()}-${d.getDate()}`;
-        const isFridayOrHoliday = !!holidays2026[holKey];
+        const isFridayOrHoliday = d.getFullYear() === 2026 && !!holidays2026[holKey];
         const hourlyRate = parseFloat(settings.hourlyRate) || 0;
         const holidayMultiplier = parseFloat(settings.holidayMultiplier) || 2.0;
         const currentRate = isFridayOrHoliday ? (hourlyRate * holidayMultiplier) : hourlyRate;
@@ -92,7 +95,7 @@ export default function History({ initialMonth }) {
     const fixedMonthly = selectedMonth !== "all"
       ? (parseFloat(settings.gross) || 0) + (parseFloat(settings.bonus) || 0)
       : 0;
-    return { totalHrs, tiffinAmt, nightAmt, otEarnings, fixedMonthly, grandTotal: fixedMonthly + otEarnings + tiffinAmt + nightAmt };
+    return { totalHrs, tiffinAmt, nightAmt, otEarnings, otherEarnings, fixedMonthly, grandTotal: fixedMonthly + otEarnings + tiffinAmt + nightAmt + otherEarnings };
   }, [filteredEntries, settings, selectedMonth]);
 
   const getMonthLabel = (ym) => {

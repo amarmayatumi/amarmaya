@@ -32,6 +32,11 @@ export function AppProvider({ children }) {
 
   // Ref to always hold latest data for the online event handler
   const latestRef = useRef({ settings, entries, uid, isLoaded });
+  // A local reset pauses cloud writes until the user explicitly changes or restores data.
+  const cloudSyncPausedRef = useRef(false);
+  // Serialize cloud writes so an older, slower request cannot overwrite newer data.
+  const cloudSyncQueueRef = useRef(Promise.resolve());
+  const cloudSyncVersionRef = useRef(0);
   useEffect(() => {
     latestRef.current = { settings, entries, uid, isLoaded };
   }, [settings, entries, uid, isLoaded]);
@@ -62,22 +67,29 @@ export function AppProvider({ children }) {
     const syncEntries = e ?? ce;
     const syncUid = u ?? cu;
 
-    if (!syncUid || !cl) return;
+    if (!syncUid || !cl || cloudSyncPausedRef.current) return false;
 
-    localStorage.setItem("my_ot_settings", JSON.stringify(syncSettings));
-    localStorage.setItem("my_ot_entries", JSON.stringify(syncEntries));
+    const syncVersion = cloudSyncVersionRef.current;
+    const saveToCloud = async () => {
+      // Drop snapshots queued before a reset or explicit restore.
+      if (syncVersion !== cloudSyncVersionRef.current || cloudSyncPausedRef.current) return false;
+      try {
+        const res = await fetch("/api/user", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "save", uid: syncUid, data: { settings: syncSettings, entries: syncEntries } }),
+        });
+        return res.ok;
+      } catch (e) {
+        console.error("API Sync error", e);
+        return false;
+      }
+    };
 
-    try {
-      const res = await fetch("/api/user", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "save", uid: syncUid, data: { settings: syncSettings, entries: syncEntries } }),
-      });
-      return res.ok;
-    } catch (e) {
-      console.error("API Sync error", e);
-      return false;
-    }
+    // Queue saves in order; each request uses the snapshot captured above.
+    const queuedSave = cloudSyncQueueRef.current.then(saveToCloud, saveToCloud);
+    cloudSyncQueueRef.current = queuedSave.then(() => undefined, () => undefined);
+    return queuedSave;
   }, []);
 
   // Initialize UID and load local data / Auto-restore from migration
@@ -87,6 +99,7 @@ export function AppProvider({ children }) {
         // নতুন app: শুধু নিজের localStorage data ব্যবহার করি।
         // Cloud restore শুধুমাত্র Settings থেকে UID দিয়ে explicitly করা যাবে।
         let savedUid = localStorage.getItem("my_ot_uid");
+        if (!/^U[a-f0-9]{32}$/i.test(savedUid || "")) savedUid = null;
 
         if (!savedUid) {
           const randomId = typeof crypto !== "undefined" && crypto.randomUUID
@@ -121,7 +134,19 @@ export function AppProvider({ children }) {
     loadData();
   }, []);
 
-  // Sync to local storage and DB when state changes
+  // Persist locally immediately; cloud sync remains debounced separately.
+  // This protects recent edits if the tab closes before the cloud debounce fires.
+  useEffect(() => {
+    if (!isLoaded || !uid) return;
+    try {
+      localStorage.setItem("my_ot_settings", JSON.stringify(settings));
+      localStorage.setItem("my_ot_entries", JSON.stringify(entries));
+    } catch (error) {
+      console.error("Local storage save error", error);
+    }
+  }, [settings, entries, isLoaded, uid]);
+
+  // Sync to cloud when state changes
   useEffect(() => {
     if (!isLoaded || !uid) return;
 
@@ -151,16 +176,26 @@ export function AppProvider({ children }) {
   }, [performSync]);
 
   const restoreFromCloud = async (targetUid) => {
-    if (!targetUid) return { success: false, message: "ID required" };
+    if (typeof targetUid !== "string" || !/^U[a-f0-9]{32}$/i.test(targetUid)) return { success: false, message: "Invalid UID" };
     try {
-      const res = await fetch(`/api/user?action=load&uid=${encodeURIComponent(targetUid)}`);
+      // Finish prior queued saves before fetching the requested cloud snapshot.
+      await cloudSyncQueueRef.current;
+      const res = await fetch("/api/user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "load", uid: targetUid }),
+      });
       const result = await res.json();
 
-      if (res.ok && result.status === "success" && result.data) {
+      if (res.ok && result.status === "success" && result.data &&
+          result.data.settings && typeof result.data.settings === "object" && !Array.isArray(result.data.settings) &&
+          Array.isArray(result.data.entries)) {
         const { settings: newSettings, entries: newEntries } = result.data;
         
         // Final Safeguard: Merge with initial settings to ensure no missing properties
         const mergedSettings = { ...initialSettings, ...(newSettings || {}) };
+        cloudSyncVersionRef.current += 1;
+        cloudSyncPausedRef.current = false;
         setSettings(mergedSettings);
         setEntries(Array.isArray(newEntries) ? newEntries : []);
         setUid(targetUid);
@@ -177,24 +212,93 @@ export function AppProvider({ children }) {
     }
   };
 
-  const addEntry = (entry) => setEntries((prev) => [...prev, entry]);
-  const deleteEntry = (id) => setEntries((prev) => prev.filter((e) => e.id !== id));
+  const updateSettings = (value) => {
+    cloudSyncPausedRef.current = false;
+    setSettings(value);
+  };
+  const addEntry = (entry) => {
+    cloudSyncPausedRef.current = false;
+    setEntries((prev) => [...prev, entry]);
+  };
+  const deleteEntry = (id) => {
+    cloudSyncPausedRef.current = false;
+    setEntries((prev) => prev.filter((e) => e.id !== id));
+  };
+  const restoreLocalBackup = (snapshot) => {
+    if (!snapshot || typeof snapshot !== "object" || !snapshot.settings || typeof snapshot.settings !== "object" || Array.isArray(snapshot.settings) || !Array.isArray(snapshot.entries)) {
+      return { success: false, message: "Backup file is invalid" };
+    }
+    try {
+      const restoredSettings = { ...initialSettings, ...snapshot.settings };
+      const restoredUid = typeof snapshot.uid === "string" && /^U[a-f0-9]{32}$/i.test(snapshot.uid)
+        ? snapshot.uid
+        : latestRef.current.uid;
+      // Persist first; if storage is unavailable, leave in-memory state unchanged.
+      localStorage.setItem("my_ot_settings", JSON.stringify(restoredSettings));
+      localStorage.setItem("my_ot_entries", JSON.stringify(snapshot.entries));
+      if (restoredUid) localStorage.setItem("my_ot_uid", restoredUid);
+      // Do not overwrite a possibly newer cloud backup automatically.
+      cloudSyncVersionRef.current += 1;
+      cloudSyncPausedRef.current = true;
+      setSettings(restoredSettings);
+      setEntries(snapshot.entries);
+      if (restoredUid) setUid(restoredUid);
+      return { success: true };
+    } catch (error) {
+      console.error("Local backup restore failed", error);
+      return { success: false, message: "Could not restore backup on this device" };
+    }
+  };
+
+  const restorePreResetBackup = () => {
+    try {
+      const raw = localStorage.getItem("my_ot_pre_reset_backup");
+      if (!raw) return { success: false, message: "No pre-reset backup found on this device" };
+      const snapshot = JSON.parse(raw);
+      return restoreLocalBackup(snapshot);
+    } catch (error) {
+      console.error("Pre-reset backup restore failed", error);
+      return { success: false, message: "Could not read the pre-reset backup" };
+    }
+  };
+
   const clearData = () => {
+    // Keep a recoverable snapshot before clearing anything on this device.
+    // The existing cloud record is intentionally left untouched.
+    try {
+      const snapshot = {
+        version: 1,
+        savedAt: new Date().toISOString(),
+        uid: latestRef.current.uid,
+        settings: latestRef.current.settings,
+        entries: latestRef.current.entries,
+      };
+      localStorage.setItem("my_ot_pre_reset_backup", JSON.stringify(snapshot));
+    } catch (error) {
+      console.error("Could not create pre-reset backup; reset cancelled", error);
+      return false;
+    }
+
+    cloudSyncVersionRef.current += 1;
+    cloudSyncPausedRef.current = true;
     setSettings(initialSettings);
     setEntries([]);
+    return true;
   };
 
   return (
     <AppContext.Provider
       value={{
         settings,
-        setSettings,
+        setSettings: updateSettings,
         entries,
         uid,
         isLoaded,
         addEntry,
         deleteEntry,
         restoreFromCloud,
+        restoreLocalBackup,
+        restorePreResetBackup,
         clearData,
         showDialog
       }}

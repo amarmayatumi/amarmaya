@@ -122,7 +122,7 @@ export default function BanglaCalendarView({ onClose }) {
         daysGrid.push({
             day: i,
             isToday: date.toDateString() === today.toDateString(),
-            isHoliday: !!holidays2026[holKey],
+            isHoliday: date.getFullYear() === 2026 && !!holidays2026[holKey],
             engDate: date.getDate(),
             engMonth: date.toLocaleString('default', { month: 'short' })
         });

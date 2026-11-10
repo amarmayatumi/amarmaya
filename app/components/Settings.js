@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useAppContext } from "../AppContext";
 
 export default function Settings() {
-  const { settings, setSettings, uid, restoreFromCloud, clearData, showDialog } = useAppContext();
+  const { settings, setSettings, entries, uid, restoreFromCloud, restoreLocalBackup, restorePreResetBackup, clearData, showDialog } = useAppContext();
   
   const [formData, setFormData] = useState({
     name: settings.name || "",
@@ -18,6 +18,16 @@ export default function Settings() {
   });
 
   const [restoreId, setRestoreId] = useState("");
+  const [backupBusy, setBackupBusy] = useState(false);
+
+  const makeBackupSnapshot = () => ({
+    app: "AmarMaya",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    uid,
+    settings,
+    entries,
+  });
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -58,18 +68,90 @@ export default function Settings() {
   };
 
   const handleRestore = async () => {
-    if(!restoreId) return;
-    const res = await restoreFromCloud(restoreId);
+    const targetUid = restoreId.trim();
+    if (!/^U[a-f0-9]{32}$/i.test(targetUid)) {
+      await showDialog({ title: "Invalid UID", message: "সঠিক AmarMaya UID লিখুন।", type: "danger" });
+      return;
+    }
+    const confirmed = await showDialog({
+      title: "Cloud Backup Restore?",
+      message: "এই UID-এর Cloud Backup বর্তমান ডিভাইসের তথ্যের জায়গায় বসবে। আগে বর্তমান তথ্য Download Backup দিয়ে সংরক্ষণ করুন। চালিয়ে যাবেন?",
+      type: "danger",
+    });
+    if (!confirmed) return;
+    const res = await restoreFromCloud(targetUid);
     if(res.success) {
-      await showDialog({ title: "Restored!", message: "Your data has been synced from cloud.", type: "success" });
+      setRestoreId("");
+      await showDialog({ title: "Restored!", message: "Cloud Backup বর্তমান ডিভাইসে Restore হয়েছে।", type: "success" });
     } else {
       await showDialog({ title: "Failed", message: `Restore failed: ${res.message}`, type: "danger" });
     }
   };
 
   const handleCopyUid = async () => {
-    navigator.clipboard.writeText(uid);
+    if (!uid) return;
+    await navigator.clipboard.writeText(uid);
     await showDialog({ title: "Copied!", message: "Your Unique ID has been copied to clipboard.", type: "success" });
+  };
+
+  const handleExportBackup = () => {
+    try {
+      const blob = new Blob([JSON.stringify(makeBackupSnapshot(), null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `amarmaya-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      showDialog({ title: "Backup failed", message: "এই ডিভাইসে Backup তৈরি করা যায়নি।", type: "danger" });
+    }
+  };
+
+  const handleRestoreBeforeReset = async () => {
+    const confirmed = await showDialog({
+      title: "Restore Previous Device Data?",
+      message: "Reset করার আগে এই ডিভাইসে রাখা Backup থেকে তথ্য ফিরিয়ে আনা হবে। বর্তমান তথ্য আগে Download Backup দিয়ে সংরক্ষণ করুন। Cloud Backup স্বয়ংক্রিয়ভাবে overwrite হবে না।",
+      type: "danger",
+    });
+    if (!confirmed) return;
+    const result = restorePreResetBackup();
+    await showDialog({
+      title: result.success ? "Backup Restored" : "Restore Failed",
+      message: result.success ? "Reset-এর আগের ডিভাইসের তথ্য ফিরিয়ে আনা হয়েছে।" : result.message,
+      type: result.success ? "success" : "danger",
+    });
+  };
+
+  const handleImportBackup = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setBackupBusy(true);
+    try {
+      const snapshot = JSON.parse(await file.text());
+      if (snapshot.app !== "AmarMaya" || !snapshot.settings || !Array.isArray(snapshot.entries)) {
+        throw new Error("Invalid backup format");
+      }
+      const confirmed = await showDialog({
+        title: "Restore Backup?",
+        message: "এই Backup-এর তথ্য বর্তমান ডিভাইসের তথ্যের জায়গায় বসবে। আগে বর্তমান তথ্য Export করে রাখুন। Cloud Backup স্বয়ংক্রিয়ভাবে পরিবর্তন হবে না। চালিয়ে যাবেন?",
+        type: "danger",
+      });
+      if (!confirmed) return;
+      const result = restoreLocalBackup(snapshot);
+      await showDialog({
+        title: result.success ? "Backup Restored" : "Restore Failed",
+        message: result.success ? "ডিভাইসে Backup Restore হয়েছে। Cloud Backup আলাদা থাকবে।" : result.message,
+        type: result.success ? "success" : "danger",
+      });
+    } catch (error) {
+      await showDialog({ title: "Invalid Backup", message: "ফাইলটি AmarMaya-এর সঠিক Backup JSON নয়।", type: "danger" });
+    } finally {
+      setBackupBusy(false);
+      event.target.value = "";
+    }
   };
 
   return (
@@ -171,10 +253,10 @@ export default function Settings() {
         {/* Cloud Sync section matched to HTML */}
         <div className="glass-card p-3" style={{ background: "rgba(0, 70, 255, 0.1)", border: "1px solid rgba(0, 100, 255, 0.3)", padding: "15px", borderRadius: "10px", marginBottom: "20px" }}>
           <div style={{ color: "#4a9eff", marginBottom: "10px", fontWeight: "bold" }}><i className="ri-cloud-line"></i> Cloud Sync (Auto)</div>
-          <p style={{ fontSize: "0.8rem", color: "#ccc", marginBottom: "15px" }}>Your data is synced automatically. Use your Unique ID to restore.</p>
+          <p style={{ fontSize: "0.8rem", color: "#ccc", marginBottom: "15px" }}>আপনার ডেটা স্বয়ংক্রিয়ভাবে Sync হয়। শুধু Unique ID দিয়েই Restore করা যাবে—এটি পাসওয়ার্ডের মতো গোপন রাখুন।</p>
           
           <div className="form-group" style={{ marginBottom: "15px" }}>
-            <label style={{ color: "#4a9eff", display: "block", marginBottom: "5px", fontSize: "0.8rem" }}>Your Unique ID (KEEP SAFE)</label>
+            <label style={{ color: "#4a9eff", display: "block", marginBottom: "5px", fontSize: "0.8rem" }}>আপনার Unique ID (গোপন রাখুন)</label>
             <div style={{ display: "flex", gap: "10px" }}>
               <input type="text" readOnly value={uid || "Loading..."} style={{ background: "#000", color: "#fff", fontFamily: "monospace", flex: 1, textAlign: "center", border: "1px solid #333", padding: "8px", borderRadius: "5px" }} />
               <button type="button" onClick={handleCopyUid} style={{ background: "#333", border: "none", color: "#fff", padding: "8px 15px", borderRadius: "5px", cursor: "pointer" }}><i className="ri-file-copy-line"></i></button>
@@ -182,12 +264,29 @@ export default function Settings() {
           </div>
 
           <div className="form-group" style={{ borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: "15px" }}>
-            <label style={{ display: "block", marginBottom: "5px", fontSize: "0.8rem" }}>Restore Data</label>
+            <label style={{ display: "block", marginBottom: "5px", fontSize: "0.8rem" }}>Cloud Backup Restore</label>
             <div style={{ display: "flex", gap: "10px" }}>
-              <input type="text" value={restoreId} onChange={e => setRestoreId(e.target.value)} placeholder="Enter Old UID" style={{ flex: 1, padding: "8px", background: "#111", border: "1px solid #333", color: "#fff", borderRadius: "5px" }} />
+              <input type="text" value={restoreId} onChange={e => setRestoreId(e.target.value)} placeholder="পুরোনো UID লিখুন" style={{ flex: 1, padding: "8px", background: "#111", border: "1px solid #333", color: "#fff", borderRadius: "5px" }} />
               <button type="button" onClick={handleRestore} style={{ background: "#4a9eff", color: "#fff", border: "none", padding: "8px 15px", borderRadius: "5px", cursor: "pointer", fontWeight: "bold" }}>RESTORE</button>
             </div>
           </div>
+        </div>
+
+        <div className="glass-card" style={{ padding: "15px", marginBottom: "20px", border: "1px solid rgba(0,200,120,0.35)", borderRadius: "10px", background: "rgba(0,120,70,0.08)" }}>
+          <div style={{ color: "#54d69a", fontWeight: "bold", marginBottom: "8px" }}>ডেটা Backup ও Restore</div>
+          <p style={{ color: "#ccc", fontSize: "0.82rem", lineHeight: 1.5, marginBottom: "12px" }}>
+            নিজের ডিভাইসের বাইরে একটি JSON Backup রাখুন। Restore করলে বর্তমান ডিভাইসের তথ্য বদলাবে; Cloud Backup নিজে থেকে overwrite হবে না।
+          </p>
+          <button type="button" onClick={handleRestoreBeforeReset} style={{ width: "100%", padding: "11px", border: "1px solid #54d69a", borderRadius: "7px", background: "transparent", color: "#9ce8c3", fontWeight: "bold", marginBottom: "10px" }}>
+            Restore Previous Reset Backup
+          </button>
+          <button type="button" onClick={handleExportBackup} style={{ width: "100%", padding: "11px", border: 0, borderRadius: "7px", background: "#16845a", color: "white", fontWeight: "bold", marginBottom: "10px" }}>
+            Download Backup (JSON)
+          </button>
+          <label style={{ display: "block", textAlign: "center", padding: "11px", border: "1px solid #54d69a", borderRadius: "7px", color: "#9ce8c3", cursor: backupBusy ? "wait" : "pointer", opacity: backupBusy ? 0.6 : 1 }}>
+            {backupBusy ? "Restoring..." : "Restore from Backup File"}
+            <input type="file" accept="application/json,.json" onChange={handleImportBackup} disabled={backupBusy} style={{ display: "none" }} />
+          </label>
         </div>
 
         {/* Developer Support Section */}
@@ -208,8 +307,11 @@ export default function Settings() {
         
         <div style={{ marginTop: "30px", textAlign: "center" }}>
            <button type="button" onClick={async () => {
-             const ok = await showDialog({ title: "Reset Data", message: "This will clear all local data. Are you sure?", type: "danger" });
-             if(ok) clearData();
+             const ok = await showDialog({ title: "Reset Data", message: "আপনার বর্তমান ডেটার একটি ব্যাকআপ এই ডিভাইসে রাখা হবে। শুধু এই ডিভাইসের ডেটা রিসেট হবে; Cloud Backup মুছে ফেলা হবে না। আপনি কি নিশ্চিত?", type: "danger" });
+             if (ok) {
+               const reset = clearData();
+               if (!reset) await showDialog({ title: "Reset Cancelled", message: "Backup তৈরি করা যায়নি, তাই আপনার ডেটা নিরাপদ রাখতে Reset করা হয়নি।", type: "danger" });
+             }
            }} style={{ background: "transparent", border: "1px solid #ff3838", color: "#ff3838", padding: "10px 20px", borderRadius: "5px", cursor: "pointer", width: "100%", textTransform: "uppercase", fontWeight: "bold" }}>
              Reset Local Data
            </button>

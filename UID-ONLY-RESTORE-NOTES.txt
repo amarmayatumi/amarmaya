@@ -1,0 +1,17 @@
+AmarMaya UID-only restore update
+
+- No user login or email/password account was added.
+- The existing random UID remains the only cloud restore credential.
+- UID format remains U + 32 hexadecimal characters (128 bits of randomness).
+- Cloud restore now sends the UID in a POST request body instead of a URL query string.
+- The user API handles load and save actions via POST.
+- The public GET endpoint no longer accepts UID-based data loads.
+- No Supabase schema migration or database reset is included.
+
+Security note:
+Treat the UID like a password. Anyone who obtains it may be able to read or overwrite that user's cloud backup. Do not post it publicly or share it with anyone. Losing the UID means cloud restore may not be possible; keep a separate local JSON backup too.
+
+Validation:
+TypeScript transpile/parser checks passed for the three modified JS/JSX files.
+A full npm install/build could not be completed in this environment because npm ci timed out.
+This package has not been deployed to GitHub, Render, or Supabase.

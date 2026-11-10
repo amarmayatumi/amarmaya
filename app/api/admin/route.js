@@ -46,7 +46,7 @@ export async function POST(request) {
     if (!db) return jsonResponse({ status: 'error', message: 'Database is not configured' }, 503);
 
     if (action === 'save') {
-      if (!isValidUid(uid) || !data || typeof data !== 'object') {
+      if (!isValidUid(uid) || !data || typeof data !== 'object' || Array.isArray(data) || !data.settings || typeof data.settings !== 'object' || Array.isArray(data.settings) || !Array.isArray(data.entries) || data.entries.length > 20000 || Buffer.byteLength(JSON.stringify(data), 'utf8') > 1_000_000) {
         return jsonResponse({ status: 'error', message: 'Invalid uid or data' }, 400);
       }
 
